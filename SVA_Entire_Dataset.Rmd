@@ -1,6 +1,8 @@
 ---
 title: "SVA on Entire Dataset"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 # Load Necessary Packages
