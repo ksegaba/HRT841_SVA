@@ -1,7 +1,7 @@
 #rPCA for outlier removal prior to SVA
 library('rrcov')
 library("DESeq2")
-
+library('ggplot2')
 
 mdata <- read.csv("RNAseq_metadata_11-30-20.csv", header=T) # read in expression data
 rownames(mdata) <- mdata[,1] ; mdata[,1] <- NULL # reset rownames to Orthogroup columns
