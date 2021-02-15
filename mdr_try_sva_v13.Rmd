@@ -352,5 +352,21 @@ ggplot(plotdata, aes(Surrogate.Variable, Technical.Variable)) +
   ylab("Primary or unmodeled variable") + 
   theme(text = element_text(size = 12))
 ```
+### Generating CleanSV Datasets for visualization of the sequential subtraction of SV effects on the expression matrix
 
+library(openxlsx)
+help(openxlsx)
+
+svcols = svseq$sv[1,]
+the_length = length(svcols)
+my_range = 0:the_length
+my_range = c(0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)
+
+filenames = c("CleanSV_1.xlsx","CleanSV_2.xlsx","CleanSV_3.xlsx","CleanSV_4.xlsx","CleanSV_5.xlsx","CleanSV_6.xlsx","CleanSV_7.xlsx","CleanSV_8.xlsx","CleanSV_9.xlsx","CleanSv_10.xlsx","CleanSV_11.xlsx","CleanSV_12.xlsx","CleanSV_13.xlsx","CleanSV_14.xlsx","CleanSV_15.xlsx","CleanSV_16.xlsx")
+
+for (val in my_range) { 
+sv_to_use = svseq$sv[,0:val]
+cleanExpress = cleanY(express, mod1, sv_to_use)
+write.xlsx(cleanExpress,file = filenames[val+1], rowNames = TRUE)
+}
 
