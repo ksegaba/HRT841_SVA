@@ -22,9 +22,19 @@ saveRDS(rob_pca,'rob_pca.rds')
 
 #Indicator of outliers: FALSE for outlier, TRUE for regular sample
 outliers<-rob_pca@flag
+outlier_sras <- outliers[which(outliers==FALSE)] #extract outliers from rob_pca
+outlier_sras <- data.frame(outlier_sras) #data frame of outlier SRA accessions
+head(outlier_sras)
 
 #how many outliers?
 length(which(outliers=='FALSE'))
+
+#rPCA plots
+plot(rob_pca$scores[,1], rob_pca$scores[,2], col = as.factor(pheno2$tissue), main = "Tissue")
+plot(rob_pca$scores[,1], rob_pca$scores[,2], col = as.factor(pheno2$stress), main = "Stress")
+plot(rob_pca$scores[,1], rob_pca$scores[,2], col = as.factor(pheno2$family), main = "Family")
+
+
 ##Visualization
 
 pheno3<-data.frame(pheno2,robust_score_distance=rob_pca@sd,orthogonal_distance=rob_pca@od)
@@ -82,6 +92,29 @@ pdf("outlier_plot_pcaGRID_K=5_species2.pdf")
 p1
 dev.off()
 
+####################### PcaGrid Method: No normalization #######################
+saveRDS(t(mdata),'tmdata.rds')
+
+model <- lm(t(mdata) ~ tissue + stress + family, data = pheno2)
+#Linearity of data
+plot(model$fitted.values, model$residuals, main = "Residuals vs Fitted")
+
+rob_pca<-PcaGrid(t(mdata),k=5)
+saveRDS(rob_pca,'rob_pca.rds')
+
+#Indicator of outliers: FALSE for outlier, TRUE for regular sample
+outliers<-rob_pca@flag
+outlier_sras <- outliers[which(outliers==FALSE)] 
+outlier_sras <- data.frame(outlier_sras)
+head(outlier_sras)
+
+#how many outliers?
+length(which(outliers=='FALSE'))
+
+#rPCA plots
+plot(rob_pca$scores[,1], rob_pca$scores[,2], col = as.factor(pheno2$tissue), main = "Tissue")
+plot(rob_pca$scores[,1], rob_pca$scores[,2], col = as.factor(pheno2$stress), main = "Stress")
+plot(rob_pca$scores[,1], rob_pca$scores[,2], col = as.factor(pheno2$family), main = "Family")
 
 
 
