@@ -1,0 +1,568 @@
+---
+title: "HRT841: Remove influence of surrogate variables from expression matrix"
+author: "Miles Roberts"
+date: "2021-02-17"
+output: html_document
+---
+
+## Setup datasets for SVA
+```{r}
+rm(list = ls())
+setwd("C:\\Users\\miles\\OneDrive\\Education\\MichiganStateUniversity\\classes\\fall_2020\\hrt841\\final_project\\05_data_exploration")
+
+library(sva)	#For surrogate variable estimation
+library(bladderbatch)	#Contains example data
+library(limma)	#For differential gene expression, correction of expression data with surrogate variables
+library(ggplot2) #For plotting
+library(SRAdb)  #To extract bioproject numbers using SRA numbers
+library(reshape)
+keyfactors = read.csv("factors_v1.csv", header = T)
+express = read.csv("RNAseq_metadata_11-30-20.csv", header = T)
+
+express[1:5,1:5]
+head(keyfactors)
+
+#Subset out the SRAs with expression values
+keyfacsub = keyfactors[which(keyfactors$sra %in% colnames(express)),]
+head(keyfacsub)
+
+#Are all SRAs in matrix also in factor sheet?
+all(colnames(express)[-1] %in% keyfactors$sra)
+
+#Which one is missing? There's an extra tab in one sample name
+colnames(express)[which(!(colnames(express) %in% keyfactors$sra))]
+keyfactors$sra[grepl("SRR122139\t", keyfactors$sra)] = "SRR122139"
+
+#Try subsetting again
+#Subset out the SRAs with expression values
+keyfacsub = keyfactors[which(keyfactors$sra %in% colnames(express)),]
+head(keyfacsub)
+
+#Are all SRAs in matrix also in factor sheet? SHOULD GET TRUE THIS TIME
+all(colnames(express)[-1] %in% keyfactors$sra)
+```
+
+## Before doing batch correction or SVA, do PCA
+```{r}
+#Change row names of factor sheet to match column names of expression matrix
+rownames(keyfacsub) = keyfacsub$sra
+head(keyfacsub)
+
+#Subset phenotype data to relevant factors, add sample column for null model
+mypheno = keyfacsub[,c("family", "species", "tissue", "stress", "sra")]
+head(mypheno)
+
+#expression data must be in matrix, columns are samples, rows are genes or orthogroups in this case
+rownames(express) = express[,1]
+express = as.matrix(express[,-1])
+
+noCorPca = prcomp(t(express), center = T, scale = T)
+plot(noCorPca$x)
+
+#Plot PCA and color points by family, tissue, and stress
+plotdata = data.frame(SRAnumber = rownames(noCorPca$x), PC1 = noCorPca$x[,"PC1"], PC2 = noCorPca$x[,"PC2"])
+
+plotfactors = mypheno
+plotfactors$SRAnumber = rownames(mypheno)
+
+plotdata = merge(plotdata,plotfactors, by = "SRAnumber")
+head(plotdata)
+
+ggplot(data = plotdata, aes(x = PC1, y = PC2, col = family)) +
+	theme_classic() +
+	geom_point()
+
+ggplot(data = plotdata, aes(x = PC1, y = PC2, col = tissue)) +
+	theme_classic() +
+	geom_point()
+
+ggplot(data = plotdata, aes(x = PC1, y = PC2, col = stress)) +
+	theme_classic() +
+	geom_point()
+```
+
+## DO ANOVA BEFORE SVA
+```{r echo = T, results = 'hide'}
+#Before applying SVA, see if interactions between primary variables are significant
+#Write out names for output files, if names files already exist, delete them so that append function later doesn't mess with data structure
+pvaluesFile = "anovaKruskalPvaluesPreSVA_2021-02-05.txt"
+coeffsFile = "anovaCoeffsPreSVA_2021-02-05.txt"
+
+if(file.exists(pvaluesFile)){
+  file.remove(pvaluesFile)
+}
+
+if(file.exists(coeffsFile)){
+  file.remove(coeffsFile)
+}
+
+#Loop over each orthogroup, apply ANOV to each orthogroup
+for(i in 1:nrow(express)){
+  #Print progress as for loop goes
+  if(i %% 100 == 0){
+    print(i)
+  }
+  
+  #Extract data for just one orthogroup
+  expSub = express[i,]
+  expSub = data.frame(sra = names(expSub), expression = expSub)
+  lmdat = merge(mypheno, expSub, by = "sra")
+  
+  #Apply anova and non-parametric equivalent
+  lmmod = aov(expression ~ family*tissue*stress, data = lmdat)
+  kfammod = kruskal.test(expression ~ family, data = lmdat)
+  ktismod = kruskal.test(expression ~ tissue, data = lmdat)
+  kstrmod = kruskal.test(expression ~ stress, data = lmdat)
+  
+  #Save coefficients
+  #Orthogroup Coefficient Coefficient.value p.value
+  newCoeff = lmmod$coefficients
+  coeffs = data.frame(orthogroup = rep(rownames(express)[i], times = length(newCoeff)), coefficient = names(newCoeff), coefficient.value = newCoeff)
+  
+  #Save pvalues
+  lmmod = anova(lmmod)
+  aovPvalue = data.frame(orthogroup = rep(rownames(express)[i], times = 7), terms = rownames(lmmod)[-8], aovStat = lmmod[-8,4], aovPvalue = lmmod[-8,5])
+  
+  kruskalPvalue = data.frame(orthogroup = rep(rownames(express)[i], times = 3), terms = c("family", "tissue", "stress"), kruskalStat = c(kfammod$statistic, ktismod$statistic, kstrmod$statistic), krsukalPvalue = c(kfammod$p.value, ktismod$p.value, kstrmod$p.value))
+  
+  pvalues = merge(aovPvalue, kruskalPvalue, by = c("orthogroup", "terms"), all.x = T)
+  
+  #Write results to tables
+  write.table(pvalues, pvaluesFile, sep = "\t", quote = F, row.names = F, append = T, col.names = F)
+  write.table(coeffs, coeffsFile, sep = "\t", quote = F, row.names = F, append = T, col.names = F)
+}
+```
+
+## Visualize p-values from pre-SVA ANOVA 
+```{r}
+savedPvalues = read.table(pvaluesFile, sep = "\t")
+
+#Subset significant terms after bonferonni correction
+sigPvalues = savedPvalues[which(savedPvalues$V4 < 0.05/nrow(savedPvalues)),]
+
+#histogram frequency of significant values in different levels
+hist(sigPvalues[which(sigPvalues$V2 == "family"),"V4"])
+hist(sigPvalues[which(sigPvalues$V2 == "tissue"),"V4"])
+hist(sigPvalues[which(sigPvalues$V2 == "stress"),"V4"])
+
+#barplot frequency of significant values in different levels
+table(sigPvalues$V2)
+
+plotdata = table(sigPvalues$V2)[c("tissue", "family", "stress", "family:tissue", "family:stress", "tissue:stress", "family:tissue:stress")]
+
+par(mar = c(10,6,3,1))
+barplot(plotdata, las = 2, ylab = "Frequency of significant ANOVA term")
+```
+
+## Apply SVA
+```{r}
+#Try another model. Specify two-step method because it doesn't require null model specification, which causes issues with unbalanced datasets
+mod1 = model.matrix(~family + tissue + stress, data = mypheno)
+mod0 =  model.matrix(~1, data = mypheno)
+svseq = svaseq(express, mod1, method = "two-step")
+plot(svseq$sv, pch=19, col="blue")
+
+#Now correct for surrogate variables, fit linear model then use modeled expression values
+modSv = cbind(mod1,svseq$sv)
+fit = lmFit(express,modSv)
+#attributes(fit)
+
+#Calcualate p-value for differential expression, adjusting for multiple testing
+mod0Sv = cbind(mod0, svseq$sv)
+pValues = f.pvalue(express,modSv,mod0Sv)
+qValues = p.adjust(pValues,method="BH")
+
+#Which orthogroups are NOT differentially expressed? These could be very interesting to look at. Their expression could be conserved across all three primary variables
+putHouseGenes = names(qValues[which(qValues >= 0.05)])
+putHouseGenes
+
+#Do t-test for coefficients, H0: coefficient == 0, H1: coefficient != 0 (two-tailed test)
+#Divide coefficients by standard deviation, take absolute value so that all statistics fall in right tail, then multiply area under curve to right of statistics by 2 (two-tailed test)
+svaCoeffSig = pt(abs(fit$coefficients / fit$stdev.unscaled), df = unique(fit$df.residual), lower.tail = F) * 2
+
+#Reformat surrogate variables to include sra numbers
+svs = as.data.frame(mod0Sv)
+svs[,"(Intercept)"] = rownames(svs)
+colnames(svs)[1] = "sra"
+
+#Save results of linear model fit and surrogate variables
+write.table(fit$coefficients, "postSVAcoeffs_2021-02-05.txt", quote = F, sep = "\t")
+write.table(svaCoeffSig, "postSVAcoeffsRawPvalues_2021-02-05.txt", quote = F, sep = "\t")
+write.table(svs, "surrogateVariables_2021-02-05.txt", quote = F, sep = "\t", row.names = F)
+```
+
+## Visualize p-values from post-SVA ANOVA
+```{r}
+postPvalues = read.table("postSVAcoeffsRawPvalues_2021-02-05.txt", sep = "\t")
+
+#Function to count number of significant terms from post-SVA linear model
+countSig = function(x){
+  y = p.adjust(x, method = "bonferroni")
+  return(length(y[which(y < 0.05)]))
+}
+
+#Apply function, prepare to make plot
+postSigPvalues = apply(postPvalues, MARGIN = 2, FUN = "countSig")
+
+plotdata = data.frame(coefficient = names(postSigPvalues), frequency = postSigPvalues)
+
+#Re-name surrogate variables to match heatmap names
+svIndices = which(grepl("X", plotdata$coefficient) & grepl("X.Intercept", plotdata$coefficient) == F)
+plotdata$coefficient[svIndices] = gsub("^", "V", as.character(1:length(svIndices)))
+plotdata$coefficient[1] = "Intercept"
+
+plotdata$coefficient = as.factor(plotdata$coefficient)
+
+#Reorder barplot bars to look like pareto plot
+plotdata$coefficient = reorder(plotdata$coefficient,-plotdata$frequency)
+
+# Basic barplot
+ggplot(data = plotdata, aes(x=coefficient, y=frequency)) +
+  geom_bar(stat="identity") +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) + 
+  ylab("Frequency of significant linear model term") +
+  xlab("Linear model term")
+```
+
+## Regress surrogate variables out of expression matrix and visualize result
+```{r}
+#Biostars post: https://www.biostars.org/p/121489/
+#Define function to remove surrogate variables
+cleanY = function(y, mod, svs) {
+    X = cbind(mod, svs)
+    Hat = solve(t(X) %*% X) %*% t(X)
+    beta = (Hat %*% t(y))
+    rm(Hat)
+    gc()
+    P = ncol(mod)
+    return(y - t(as.matrix(X[,-c(1:P)]) %*% beta[-c(1:P),]))
+}
+
+#Remove surrogate variable effects
+cleanExpress = cleanY(express, mod1, svseq$sv)
+
+#Save resulting matrix
+write.table(cleanExpress, "expressionMatrixSVAcorrected_2021-02-04.txt", sep = "\t", quote = F)
+
+#Perform PCA on modeled gene expression values data
+SraCorPca2 = prcomp(t(cleanExpress), center = T, scale = T)
+#plot(SraCorPca2$x)
+
+#Plot PCA and color points by family, tissue, and stress
+plotdata = data.frame(SRAnumber = rownames(SraCorPca2$x), PC1 = SraCorPca2$x[,"PC1"], PC2 = SraCorPca2$x[,"PC2"])
+
+plotfactors = mypheno
+plotfactors$SRAnumber = rownames(mypheno)
+
+plotdata = merge(plotdata,plotfactors, by = "SRAnumber")
+head(plotdata)
+
+ggplot(data = plotdata, aes(x = PC1, y = PC2, col = family)) +
+	theme_classic() +
+	geom_point()
+
+ggplot(data = plotdata, aes(x = PC1, y = PC2, col = tissue)) +
+	theme_classic() +
+	geom_point()
+
+ggplot(data = plotdata, aes(x = PC1, y = PC2, col = stress)) +
+	theme_classic() +
+	geom_point()
+
+```
+
+## Check GO terms in particular orthogroups
+```{r}
+goterms = read.table("ATH_GO_GOSLIM.txt", skip = 4, header = F, sep = "\t", fill = TRUE )
+ogGenes = read.table("Orthogroups_filtered.tsv", header = T, sep = "\t")
+
+putHouseOgs = ogGenes[which(ogGenes$Orthogroup %in% putHouseGenes),]
+for(i in 1:nrow(putHouseOgs)){
+  araGenes = putHouseOgs[i,"Arabidopsis_thaliana.TAIR10.pep.all"]
+  araGenes = strsplit(araGenes, ", ")[[1]]
+  araGenes = unique(gsub("\\.[0-9]", "", araGenes))
+  
+  print(putHouseOgs[i,"Orthogroup"])
+  print(unique(goterms[which(goterms$V1 %in% araGenes & goterms$V8 == "C"), c("V1", "V5","V6")]))
+}
+```
+
+## Correlate surrogate variables with unmodeled technical variables
+```{r}
+#library(Compositional)
+#Load bioproject listings
+biop = read.table("bioproject_ids.txt", sep = ",")
+
+biop$V2 = gsub("\\t.*", "", biop$V2)
+biop$V2 = gsub(" ", "", biop$V2)
+mypheno$sra = rownames(mypheno)
+names(biop) = c("sra", "bioproject")
+mypheno = merge(mypheno, biop, by = "sra")
+rownames(mypheno) = mypheno$sra
+
+#Correlate bioproject with surrogate variables
+svBio = merge(mypheno, svs, by = "sra")
+str(svBio)
+
+#fit multiple linear regression model
+mod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15,V16,V17) ~ bioproject, data = svBio)
+
+#Calculate unadjusted R-squared as 1 - var(residuals)/var(total), then caluclate adjusted R-squared from that because factors with more levels will have more parameters associated with them
+extractRsquared = function(mod){
+  resvar = sapply(as.data.frame(mod$residuals), var)  #Calculate residual (i.e. unexplained) variation
+  totvar = sapply(as.data.frame(mod$residuals + mod$fitted.values), var)  #Calculate total variation in response
+  svRsquared = 1 - (resvar/totvar)  #Calcuate R-squared
+  k = nrow(mod$coefficients) - 1  #number of predictors
+  n = nrow(mod$fitted.values) #Number of observations
+  svAdjRsquared = 1 - ((1-svRsquared)*(n-1))/(n-k-1)  #Calculate adjusted R-squared
+  return(svAdjRsquared)
+}
+
+#compare R-squared values with model output
+#summary(mod)
+#extractRsquared(mod)
+
+#fit multiple linear regression model
+  #Technical variable as predictor
+bioMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15,V16,V17) ~ bioproject, data = svBio)
+speMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15,V16,V17) ~ species, data = svBio)
+  #Primary variable as predictor
+famMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15,V16,V17) ~ family, data = svBio)
+tisMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15,V16,V17) ~ tissue, data = svBio)
+strMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15,V16,V17) ~ stress, data = svBio)
+
+#Extract R-squared values
+plotdata = as.data.frame(rbind(extractRsquared(bioMod), extractRsquared(speMod), extractRsquared(famMod), extractRsquared(tisMod), extractRsquared(strMod)))
+names(plotdata) = gsub("^", "V", as.character(1:length(names(plotdata)))) #Change surrogate variable names
+plotdata = cbind(c("bioproject", "species", "family", "tissue", "stress"),plotdata)
+plotdata = melt(plotdata)
+names(plotdata) = c("Technical.Variable", "Surrogate.Variable", "Adj.R.squared")
+
+#Plot r-squared values on heatmap
+ggplot(plotdata, aes(Surrogate.Variable, Technical.Variable)) +
+  theme_minimal() +
+  scale_fill_gradient(low = "black", high = "deepskyblue", name = "Adjusted R-squared")   +
+  geom_tile(aes(fill = Adj.R.squared)) +
+  xlab("Surrogate variable ID") +
+  ylab("Primary or unmodeled variable") + 
+  theme(text = element_text(size = 12))
+```
+
+## Re-run analysis after removing outliers based on rPCA results
+### Remove outliers
+```{r}
+#The below samples look like outliers based on rPCA
+outliers = c("SRR089703", "ERR3814227", "ERR392057", "SRR4048280")
+
+#Remove outlier samples from expression matrix, factor sheet
+expNoOut = express[,which(!(colnames(express) %in% outliers))]
+dim(express)
+dim(expNoOut)
+
+phenoNoOut = mypheno[which(!(mypheno$sra %in% outliers)),]
+dim(mypheno)
+dim(phenoNoOut)
+```
+### Pre-SVA ANOVA
+```{r echo = T, results = 'hide'}
+#Before applying SVA, see if interactions between primary variables are significant
+#Write out names for output files, if names files already exist, delete them so that append function later doesn't mess with data structure
+pvaluesFile = "anovaKruskalPvaluesPreSVA_NoOutliers_2021-02-16.txt"
+coeffsFile = "anovaCoeffsPreSVA_NoOutliers_2021-02-16.txt"
+
+if(file.exists(pvaluesFile)){
+  file.remove(pvaluesFile)
+  write.table(c("orthogroup  terms  aovStat  aovPvalue  kruskalStat  krsukalPvalue"), pvaluesFile, sep = "\t", quote = F, row.names = F, append = T, col.names = F)
+}
+  
+if(file.exists(coeffsFile)){
+  file.remove(coeffsFile)
+  write.table(c("orthogroup  coefficient  coefficient.value"), coeffsFile, sep = "\t", quote = F, row.names = F, append = T, col.names = F)
+}
+
+#Loop over each orthogroup, apply ANOV to each orthogroup
+for(i in 1:nrow(expNoOut)){
+  #Print progress as for loop goes
+  if(i %% 10 == 0){
+    print(i)
+  }
+  
+  #Extract data for just one orthogroup
+  expSub = expNoOut[i,]
+  expSub = data.frame(sra = names(expSub), expression = expSub)
+  lmdat = merge(phenoNoOut, expSub, by = "sra")
+  
+  #Apply anova and non-parametric equivalent
+  lmmod = aov(expression ~ family*tissue*stress, data = lmdat)
+  kfammod = kruskal.test(expression ~ family, data = lmdat)
+  ktismod = kruskal.test(expression ~ tissue, data = lmdat)
+  kstrmod = kruskal.test(expression ~ stress, data = lmdat)
+  
+  #Save coefficients
+  #Orthogroup Coefficient Coefficient.value p.value
+  newCoeff = lmmod$coefficients
+  coeffs = data.frame(orthogroup = rep(rownames(expNoOut)[i], times = length(newCoeff)), coefficient = names(newCoeff), coefficient.value = newCoeff)
+  
+  #Save pvalues
+  lmmod = anova(lmmod)
+  aovPvalue = data.frame(orthogroup = rep(rownames(expNoOut)[i], times = 7), terms = rownames(lmmod)[-8], aovStat = lmmod[-8,4], aovPvalue = lmmod[-8,5])
+  
+  kruskalPvalue = data.frame(orthogroup = rep(rownames(expNoOut)[i], times = 3), terms = c("family", "tissue", "stress"), kruskalStat = c(kfammod$statistic, ktismod$statistic, kstrmod$statistic), krsukalPvalue = c(kfammod$p.value, ktismod$p.value, kstrmod$p.value))
+  
+  pvalues = merge(aovPvalue, kruskalPvalue, by = c("orthogroup", "terms"), all.x = T)
+  
+  #Write results to tables
+  write.table(pvalues, pvaluesFile, sep = "\t", quote = F, row.names = F, append = T, col.names = F)
+  write.table(coeffs, coeffsFile, sep = "\t", quote =  F, row.names = F, append = T, col.names = F)
+}
+```
+
+### Visualize Pre-SVA results
+```{r}
+savedPvalues = read.table(pvaluesFile, sep = "\t", skip = 1)
+
+#Subset significant terms after bonferonni correction
+sigPvalues = savedPvalues[which(savedPvalues$V4 < 0.05/nrow(savedPvalues)),]
+
+#histogram frequency of significant values in different levels
+hist(sigPvalues[which(sigPvalues$V2 == "family"),"V4"])
+hist(sigPvalues[which(sigPvalues$V2 == "tissue"),"V4"])
+hist(sigPvalues[which(sigPvalues$V2 == "stress"),"V4"])
+
+#barplot frequency of significant values in different levels
+table(sigPvalues$V2)
+
+plotdata = table(sigPvalues$V2)[c("tissue", "family", "stress", "family:tissue", "family:stress", "tissue:stress", "family:tissue:stress")]
+
+par(mar = c(10,6,3,1))
+barplot(plotdata, las = 2, ylab = "Frequency of significant ANOVA term")
+```
+
+### Apply SVA after outliers are removed
+```{r}
+#Specify two-step method because it doesn't require null model specification, which causes issues with unbalanced datasets
+mod1 = model.matrix(~family + tissue + stress, data = phenoNoOut)
+mod0 =  model.matrix(~1, data = phenoNoOut)
+svseq = svaseq(expNoOut, mod1, method = "two-step")
+plot(svseq$sv, pch=19, col="blue")
+
+#Now correct for surrogate variables, fit linear model then use modeled expression values
+modSv = cbind(mod1,svseq$sv)
+fit = lmFit(expNoOut,modSv)
+#attributes(fit)
+
+#Calcualate p-value for differential expression, adjusting for multiple testing
+mod0Sv = cbind(mod0, svseq$sv)
+pValues = f.pvalue(expNoOut,modSv,mod0Sv)
+qValues = p.adjust(pValues,method="BH")
+
+#Which orthogroups are NOT differentially expressed? These could be very interesting to look at. Their expression could be conserved across all three primary variables
+putHouseGenes = names(qValues[which(qValues >= 0.05)])
+putHouseGenes
+
+#Do t-test for coefficients, H0: coefficient == 0, H1: coefficient != 0 (two-tailed test)
+#Divide coefficients by standard deviation, take absolute value so that all statistics fall in right tail, then multiply area under curve to right of statistics by 2 (two-tailed test)
+svaCoeffSig = pt(abs(fit$coefficients / fit$stdev.unscaled), df = unique(fit$df.residual), lower.tail = F) * 2
+
+#Reformat surrogate variables to include sra numbers
+svs = as.data.frame(mod0Sv)
+svs[,"(Intercept)"] = rownames(svs)
+colnames(svs)[1] = "sra"
+
+#Save results of linear model fit and surrogate variables
+write.table(fit$coefficients, "postSVAcoeffs_NoOutliers_2021-02-16.txt", quote = F, sep = "\t")
+write.table(svaCoeffSig, "postSVAcoeffsRawPvalues_NoOutliers_2021-02-16.txt", quote = F, sep = "\t")
+write.table(svs, "surrogateVariables_NoOutliers_2021-02-16.txt", quote = F, sep = "\t", row.names = F)
+```
+
+### Post-SVA ANOVA, outliers removed before SVA
+```{r}
+postPvalues = read.table("postSVAcoeffsRawPvalues_NoOutliers_2021-02-16.txt", sep = "\t")
+
+countSig = function(x){
+  y = p.adjust(x, method = "bonferroni")
+  return(length(y[which(y < 0.05)]))
+}
+
+postSigPvalues = apply(postPvalues, MARGIN = 2, FUN = "countSig")
+
+plotdata = data.frame(coefficient = names(postSigPvalues), frequency = postSigPvalues)
+
+svIndices = which(grepl("X", plotdata$coefficient) & grepl("X.Intercept", plotdata$coefficient) == F)
+plotdata$coefficient[svIndices] = gsub("^", "V", as.character(1:length(svIndices)))
+plotdata$coefficient[1] = "Intercept"
+
+plotdata$coefficient = as.factor(plotdata$coefficient)
+
+plotdata$coefficient = reorder(plotdata$coefficient,-plotdata$frequency)
+
+# Basic barplot
+ggplot(data = plotdata, aes(x=coefficient, y=frequency)) +
+  geom_bar(stat="identity") +
+  theme_classic() +
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) + 
+  ylab("Frequency of significant linear model term") +
+  xlab("Linear model term")
+```
+
+### Correlate surrogate variables with unmodeled technical variables
+```{r}
+#library(Compositional)
+#Load bioproject listings
+biop = read.table("bioproject_ids.txt", sep = ",")
+
+biop$V2 = gsub("\\t.*", "", biop$V2)
+biop$V2 = gsub(" ", "", biop$V2)
+phenoNoOut$sra = rownames(phenoNoOut)
+names(biop) = c("sra", "bioproject")
+phenoNoOut = merge(phenoNoOut, biop, by = "sra")
+rownames(phenoNoOut) = phenoNoOut$sra
+
+#Correlate bioproject with surrogate variables
+svBio = merge(phenoNoOut, svs, by = "sra")
+str(svBio)
+
+#fit multiple linear regression model
+mod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15) ~ bioproject, data = svBio)
+
+#Calculate unadjusted R-squared as 1 - var(residuals)/var(total), then caluclate adjusted R-squared from that because factors with more levels will have more parameters associated with them
+extractRsquared = function(mod){
+  resvar = sapply(as.data.frame(mod$residuals), var)  #Calculate residual (i.e. unexplained) variation
+  totvar = sapply(as.data.frame(mod$residuals + mod$fitted.values), var)  #Calculate total variation in response
+  svRsquared = 1 - (resvar/totvar)  #Calcuate R-squared
+  k = nrow(mod$coefficients) - 1  #number of predictors
+  n = nrow(mod$fitted.values) #Number of observations
+  svAdjRsquared = 1 - ((1-svRsquared)*(n-1))/(n-k-1)  #Calculate adjusted R-squared
+  return(svAdjRsquared)
+}
+
+#compare R-squared values with model output
+#summary(mod)
+#extractRsquared(mod)
+
+#fit multiple linear regression model
+  #Technical variable as predictor
+bioMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15) ~ bioproject, data = svBio)
+speMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15) ~ species, data = svBio)
+  #Primary variable as predictor
+famMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15) ~ family, data = svBio)
+tisMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15) ~ tissue, data = svBio)
+strMod = lm(cbind(V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15) ~ stress, data = svBio)
+
+#Extract R-squared values
+plotdata = as.data.frame(rbind(extractRsquared(bioMod), extractRsquared(speMod), extractRsquared(famMod), extractRsquared(tisMod), extractRsquared(strMod)))
+names(plotdata) = gsub("^", "V", as.character(1:length(names(plotdata)))) #Change surrogate variable names
+plotdata = cbind(c("bioproject", "species", "family", "tissue", "stress"),plotdata)
+plotdata = melt(plotdata)
+names(plotdata) = c("Technical.Variable", "Surrogate.Variable", "Adj.R.squared")
+
+#Plot r-squared values on heatmap
+ggplot(plotdata, aes(Surrogate.Variable, Technical.Variable)) +
+  theme_minimal() +
+  scale_fill_gradient(low = "black", high = "deepskyblue", name = "Adjusted R-squared")   +
+  geom_tile(aes(fill = Adj.R.squared)) +
+  xlab("Surrogate variable ID") +
+  ylab("Primary or unmodeled variable") + 
+  theme(text = element_text(size = 12))
+```
