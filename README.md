@@ -17,3 +17,6 @@ Data & Plots:
 2. limma R package
 3. ggplot2 R package
 4. reshape R package
+5. rrcov R package
+6. DESeq2 R package
+7. Tidyverse R package
