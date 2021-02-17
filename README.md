@@ -11,3 +11,9 @@ Data & Plots:
 - Post-SVA and post-outlier-removal plots + datasets: https://drive.google.com/file/d/1qge-x1WB6csUD74AyMZmL9STc-BERZI4/view?usp=sharing
 - Outlier removal plots: https://drive.google.com/file/d/1LGS-RH6ApqrK1c8HI6mEbjKxHcRLrY2D/view?usp=sharing
 - ANOVA and Kruskal-Wallis test results on pre- and post-SVA expression matrices, outliers removed: https://drive.google.com/file/d/1da-5YvBsKra1Is3-8cs7qHRh1Q1cndzE/view?usp=sharing
+
+# Requirements
+1. SVA R package
+2. limma R package
+3. ggplot2 R package
+4. reshape R package
