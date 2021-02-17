@@ -8,3 +8,5 @@ File Descriptions:
 
 File links: 
 Post-SVA and post-outlier-removal plots + datasets: https://drive.google.com/file/d/1qge-x1WB6csUD74AyMZmL9STc-BERZI4/view?usp=sharing
+
+ANOVA and Kruskal-Wallis test results on pre- and post-SVA expression matrices, outliers removed: https://drive.google.com/file/d/1da-5YvBsKra1Is3-8cs7qHRh1Q1cndzE/view?usp=sharing
