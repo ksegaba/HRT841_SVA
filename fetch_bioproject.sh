@@ -6,5 +6,5 @@
 while read i;
 do
 	VAR="$(esearch -db sra -query ${i} < /dev/null | efetch  -format runinfo -mode xml | xtract -pattern SraRunInfo -element BioProject)"
-	echo "${i}, ${VAR}" > bioproject_ids.txt
+	echo "${i}, ${VAR}" >> bioproject_ids.txt
 done <sra.txt
