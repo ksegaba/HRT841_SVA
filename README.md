@@ -1,7 +1,7 @@
 # HRT841 Surrogate Variable Analysis
 
 File Descriptions:
-
+**Scripts are numbered to s00, s01, etc. to show the order they are run in**
 - SVA_Entire_Dataset.Rmd: Surrogate Variable Analysis performed on the entire RNA-seq expression matrix (TPM units).
 - CSS844_SVA_Group_PlottingCleanedMatrices.ipynb: Plotting expression matrices (TPM) that have been 'cleaned' of Surrogate Variable effects (generated from - -mdr_try_sva_v13.Rmd) using PCA, MDS, and tSNE.
 - rPCA.R: Outlier removal using Robust Principle Component Analysis from the entire RNA-seq expression matrix before cleaning.
