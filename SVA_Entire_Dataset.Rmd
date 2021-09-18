@@ -12,30 +12,40 @@ output:
 library(sva)
 library(limma)
 library(tidyverse)
+library(parallel)
 ```
 
 # Load Datasets
 ```{r}
 # set working directory for easy access af data
-setwd("~/Desktop/MSU GGS:CMSE/Year One/Courses/CSS844_HRT841/SVA Analysis/") 
+setwd("~/OneDrive/MSU-GGS-CMSE/Year-One/Courses/CSS844_HRT841/HRT841_SVA/") 
 
 # read in expression data
-mdata <- read.csv("RNAseq_metadata_11-30-20.csv", header=T) 
-rownames(mdata) <- mdata[,1] ; mdata[,1] <- NULL # reset rownames to Orthogroup columns
+mdata <- read.csv("Orthogroup_RNAseq_8-23-21.csv", header=T) 
+rownames(mdata) <- mdata[,1] ; mdata <- mdata[,-1] # reset rownames to Orthogroup columns
+
+# remove accessions with no expression data
+#colnames(mdata[,which(colSums(mdata)==0)])
+to_remove <- c("SRR299086", "SRR299087", "SRR299088", "SRR299089", "SRR299090", "SRR299091", "SRR299092", 
+"SRR299093", "SRR299094", "SRR299095", "SRR299096", "SRR299097")
+mdata <- mdata[,-which(to_remove %in% colnames(mdata))]
 
 # read in phenotype data
-pheno <- read.csv("factors_v1.csv", header=T) 
-rownames(pheno) <- pheno[,2] # reset rownames to SRA accessions
+pheno <- read.csv("metadata_labels.csv", header=T) 
+rownames(pheno) <- pheno[,1] # reset rownames to SRA accessions
 
 # remove SRA accessions in pheno data that do not have expression data
 pheno2 <- pheno[(rownames(pheno) %in% colnames(mdata)),] # SRAs in pheno that match mdata
 pheno2$sample <- 1:nrow(pheno2) # create a sample column
+pheno2 <- pheno2 %>% dplyr::rename(stress=NEW_stress, tissue=NEW_tissue, family=NEW_family) # rename cols
 
 # look at the number of samples in each factor
 table(pheno2$tissue) ; table(pheno2$stress) ; table(pheno2$family)
 
 # read in Bioproject ID information that corresponds to pheno2
-bioproject <- read.delim("bioproject_ids.txt", header=F, sep=",")
+# I need to check if miles way gives the same bioprojects
+# If so, it's better bc I had to manually clean the txt file after using edirect
+bioproject <- read.delim("bioproject_ids_corrected.txt", header=F, sep="\t")
 colnames(bioproject) <- c("sra", "bioproject") # rename columns
 
 # combine bioproject and pheno2
@@ -50,6 +60,9 @@ head(mdata[,1:5]) ; head(pheno2)
 ```{r}
 # full model matrix - family, stress, tissue should be sig
 mod <- model.matrix(~stress+tissue+family, data=pheno2)
+mod_no_fam <- model.matrix(~stress+tissue, data=pheno2) # exclude family
+mod_no_tis <- model.matrix(~stress+family, data=pheno2) # exclude tissue
+mod_no_fam_tis <- model.matrix(~stress, data=pheno2) # exclude both family and tissue
 
 # null model matrix (no adjustment variables are included)
 null_mod <- model.matrix(~1, data=pheno2)
@@ -61,12 +74,38 @@ mdata <- as.matrix(mdata)
 # Perform SVASeq on Entire Dataset
 ```{r}
 # Estimate surrogate variables (SVs) using the two-step SVA method
-svseq_obj <- svaseq(mdata, mod, null_mod, method = "two-step")
-svseq_obj$sv[1:5, 1:5] # visualize surrogate variables
+# svaseq applies a log(data+1) transformation to the input data
+myfunc <- function(args) {
+	svaseq(mdata, args, null_mod, method = "two-step", n.sv=35)
+}
+clust <- makeCluster(detectCores(), type="FORK") # set up cluster for parallel processing
+args <- list(mod, mod_no_fam, mod_no_tis, mod_no_fam_tis) # arguments for sva analysis
+out <- parLapply(clust, args, myfunc) # execute sva in parallel
+stopCluster(clust) # close the cluster
 
+SVs <- out[[1]]$sv # 23 SVs
+SVs_no_fam <- out[[2]]$sv # 30 SVs
+SVs_no_tis <- out[[3]]$sv # 24 SVs
+SVs_no_fam_tis <- out[[4]]$sv # 33 SVs
 
 # plot of first 2 surrogate variables
-plot(svseq_obj$sv, pch=20, col="blue")
+plot(SVs, pch=20, col="blue")
+plot(SVs_no_fam, pch=20, col="blue")
+plot(SVs_no_tis, pch=20, col="blue")
+plot(SVs_no_fam_tis, pch=20, col="blue")
+
+# Save SVs to file:
+rownames(SVs) <- colnames(mdata)
+write.csv(SVs, "SVs_Orthogroup_RNAseq_8-23-21.csv")
+
+rownames(SVs_no_fam) <- colnames(mdata)
+write.csv(SVs_no_fam, "SVs_no_fam_Orthogroup_RNAseq_8-23-21.csv")
+
+rownames(SVs_no_tis) <- colnames(mdata)
+write.csv(SVs_no_tis, "SVs_no_tissue_Orthogroup_RNAseq_8-23-21.csv")
+
+rownames(SVs_no_fam_tis) <- colnames(mdata)
+write.csv(SVs_no_fam_tis, "SVs_no_family_tissue_Orthogroup_RNAseq_8-23-21.csv")
 ```
 
 # Adjust Data for SVs with Limma Package
@@ -74,13 +113,23 @@ plot(svseq_obj$sv, pch=20, col="blue")
 ## Remove effect of surrogate variables with limma package by fitting a linear model with surrogate variables included
 
 # Full model with SVs
-modSv <- cbind(mod, svseq_obj$sv)
+modSv <- cbind(mod, SVs)
+modSv_no_fam <- cbind(mod_no_fam, SVs_no_fam)
+modSv_no_tis <- cbind(mod_no_tis, SVs_no_tis)
+modSv_no_fam_tis <- cbind(mod_no_fam_tis, SVs_no_fam_tis)
 
 # Null model with SVs as adjustment variables
-mod0Sv <- cbind(null_mod, svseq_obj$sv) 
+mod0Sv <- cbind(null_mod, SVs) 
+mod0Sv_no_fam <- cbind(null_mod, SVs_no_fam)
+mod0Sv_no_tis <- cbind(null_mod, SVs_no_tis)
+mod0Sv_no_fam_tis <- cbind(null_mod, SVs_no_fam_tis)
 
 # linear model
 fit <- lmFit(mdata, modSv) ; summary(fit)
+fit_no_fam <- lmFit(mdata, modSv_no_fam) ; summary(fit_no_fam)
+fit_no_tis <- lmFit(mdata, modSv_no_tis) ; summary(fit_no_tis)
+fit_no_fam_tis <- lmFit(mdata, modSv_no_fam_tis) ; summary(fit_no_fam_tis)
+#fit_norm <- lmFit(mdata_norm, modSv_norm) ; summary(fit_norm)
 ```
 
 # PCA
@@ -100,7 +149,10 @@ cleanY = function(y, mod, svs) {
     return(y - t(as.matrix(X[,-c(1:P)]) %*% beta[-c(1:P),]))
 }
 
-clean_data <- cleanY(mdata, mod, svseq_obj$sv)
+clean_data <- cleanY(mdata, mod, SVs)
+clean_no_fam <- cleanY(mdata, mod_no_fam, SVs_no_fam)
+clean_no_tis <- cleanY(mdata, mod_no_tis, SVs_no_tis)
+clean_no_fam_tis <- cleanY(mdata, mod_no_fam_tis, SVs_no_fam_tis)
 
 # Function for plotting pca
 plot_pca <- function(Legend, title){
@@ -116,12 +168,45 @@ pca.res$x[1:5,1:5] # visualize matrix of principle components (PCs)
 var_explained <- pca.res$sdev^2/sum(pca.res$sdev^2) # explained variance for each PC
 var_explained[1:5] # visualize matrix of explained variance per PC
 x <- data.frame(pca.res$x) # create a dataframe of PCs
-plot_pca(pheno2$stress, "PCA on Clean Data (Stress)")
-plot_pca(pheno2$tissue, "PCA on Clean Data (Tissue)")
-plot_pca(pheno2$family, "PCA on Clean Data (Family)")
+plot_pca(pheno2$stress, "PCA on Clean Data (Stress)") ; ggsave("PCA_stress.png")
+plot_pca(pheno2$tissue, "PCA on Clean Data (Tissue)") ; ggsave("PCA_tissue.png")
+plot_pca(pheno2$family, "PCA on Clean Data (Family)") ; ggsave("PCA_family.png")
+
+# PCA on model excluding family
+pca.res <- prcomp(t(clean_no_fam), center = T, scale = T) # run PCA
+pca.res$x[1:5,1:5] # visualize matrix of principle components (PCs)
+var_explained <- pca.res$sdev^2/sum(pca.res$sdev^2) # explained variance for each PC
+var_explained[1:5] # visualize matrix of explained variance per PC
+x <- data.frame(pca.res$x) # create a dataframe of PCs
+plot_pca(pheno2$stress, "PCA on Clean Data (Stress)") ; ggsave("PCA_no_fam_stress.png")
+plot_pca(pheno2$tissue, "PCA on Clean Data (Tissue)") ; ggsave("PCA_no_fam_tissue.png")
+plot_pca(pheno2$family, "PCA on Clean Data (Family)") ; ggsave("PCA_no_fam_family.png")
+
+# PCA on model exluding tissue
+pca.res <- prcomp(t(clean_no_tis), center = T, scale = T) # run PCA
+pca.res$x[1:5,1:5] # visualize matrix of principle components (PCs)
+var_explained <- pca.res$sdev^2/sum(pca.res$sdev^2) # explained variance for each PC
+var_explained[1:5] # visualize matrix of explained variance per PC
+x <- data.frame(pca.res$x) # create a dataframe of PCs
+plot_pca(pheno2$stress, "PCA on Clean Data (Stress)") ; ggsave("PCA_no_tis_stress.png")
+plot_pca(pheno2$tissue, "PCA on Clean Data (Tissue)") ; ggsave("PCA_no_tis_tissue.png")
+plot_pca(pheno2$family, "PCA on Clean Data (Family)") ; ggsave("PCA_no_tis_family.png")
+
+# PCA on model exluding family and tissue
+pca.res <- prcomp(t(clean_no_fam_tis), center = T, scale = T) # run PCA
+pca.res$x[1:5,1:5] # visualize matrix of principle components (PCs)
+var_explained <- pca.res$sdev^2/sum(pca.res$sdev^2) # explained variance for each PC
+var_explained[1:5] # visualize matrix of explained variance per PC
+x <- data.frame(pca.res$x) # create a dataframe of PCs
+plot_pca(pheno2$stress, "PCA on Clean Data (Stress)") ; ggsave("PCA_no_fam_tis_stress.png")
+plot_pca(pheno2$tissue, "PCA on Clean Data (Tissue)") ; ggsave("PCA_no_fam_tis_tissue.png")
+plot_pca(pheno2$family, "PCA on Clean Data (Family)") ; ggsave("PCA_no_fam_tis_family.png")
 
 # write clean data to file
 write.csv(clean_data, "clean_RNAseq_metadata_11-30-20.csv")
+write.csv(clean_no_fam, "clean_no_family_RNAseq_metadata_11-30-20.csv")
+write.csv(clean_no_tis, "clean_no_tissue_RNAseq_metadata_11-30-20.csv")
+write.csv(clean_no_fam_tis, "clean_no_family_tissue_RNAseq_metadata_11-30-20.csv")
 ```
 
 # Adjusting for SVs using `f.pvalue` Method from SVA Package
@@ -144,46 +229,38 @@ length(pValuesSv[pValuesSv>0.05]) # 38 w/BH corrected p-value > 0.05
 pValuesSv[pValuesSv>0.05] # corresponding OGs
 ```
 
-# Correlation between SVs and Sample, Species, & BioProject
+# Correlation between SVs, Sample, & BioProject
 ```{r}
-# Multiple linear regression for testing the association between SVs and 3 batch variables: bioproject, sample, and species
-test <- lm(svseq_obj$sv ~ bioproject + sample + species, data = pheno2)
-summary(test)
+adjRsq <- function(lm_mod){ # from Miles' code mdr_try_sva_v16.Rmd
+  rVar = sapply(as.data.frame(lm_mod$residuals), var) # residual variance
+  tVar = sapply(as.data.frame(lm_mod$residuals + lm_mod$fitted.values), var) # total variance
+  r2 = 1-(rVar/tVar) # r squared
+  n = nrow(lm_mod$fitted.values) # sample size
+  p = nrow(lm_mod$coefficients) - 1 # number of predictors
+  ar2 = 1-((1-r2)*(n-1))/(n-p-1) # McNemar's formula, adjusted r squared
+  return(ar2)
+}
 
-########################################################################
-SVs <- svseq_obj$sv[,1:2] # create a matrix of SVs
+data_list <- list(SVs, SVs_no_fam, SVs_no_tis, SVs_no_fam_tis)
+save_name <- list("SV_corrected", "SV_&_fam_corrected", "SV_&_tis_corrected", "SV_&_fam_tis_corrected")
+for (i in 1:length(data_list)){
+	# Simple Linear Regression to test the association between bioproject, sample, tissue, family, stress and SVs. lm() uses McNEmar's formula to compute adjusted r squared values for each SV
+	d <- data.frame(data_list[i])
+	bio <- lm(as.matrix(d)~bioproject, data = pheno2)
+	sam <- lm(as.matrix(d)~sample, data = pheno2)
+	tis <- lm(as.matrix(d)~tissue, data = pheno2)
+	fam <- lm(as.matrix(d)~family, data = pheno2) 
+	str <- lm(as.matrix(d)~stress, data = pheno2)
 
-# Simple Linear Regression to test the association between bioproject and SVs
-test2 <- lm(SVs~bioproject, data = pheno2) ; summary(test2)
-## For SV1
-#Residual standard error: 0.01359 on 962 degrees of freedom
-#Multiple R-squared:  0.8224,	Adjusted R-squared:  0.8126 
-#F-statistic: 84.05 on 53 and 962 DF,  p-value: < 2.2e-16
-## For SV2
-#Residual standard error: 0.0217 on 962 degrees of freedom
-#Multiple R-squared:  0.547,	Adjusted R-squared:  0.5221 
-#F-statistic: 21.92 on 53 and 962 DF,  p-value: < 2.2e-16
+	# Adjusted R squared values for each SV
+	ar2.df <- as.data.frame(rbind(bioproject=adjRsq(bio), sample=adjRsq(sam), tissue=adjRsq(tis), family=adjRsq(fam), stress=adjRsq(str)))
+	ar2.df$Predictors <- rownames(ar2.df) 
+	ar2.df <- ar2.df %>% pivot_longer(1:ncol(d), names_to="SVs", values_to="Adj.R.Squared")
 
-# Simple Linear Regression to test the association between sample and SVs
-test3 <- lm(SVs~sample, data = pheno2) ; summary(test3)
-## For SV1
-#Residual standard error: 0.02646 on 1014 degrees of freedom
-#Multiple R-squared:  0.2902,	Adjusted R-squared:  0.2895 
-#F-statistic: 414.6 on 1 and 1014 DF,  p-value: < 2.2e-16
-## For SV2
-#Residual standard error: 0.03045 on 1014 degrees of freedom
-#Multiple R-squared:  0.05952,	Adjusted R-squared:  0.05859 
-#F-statistic: 64.17 on 1 and 1014 DF,  p-value: 3.119e-15
+	# Heatmap of adjusted R squared values
+	ggplot(ar2.df, aes(SVs, Predictors, fill=Adj.R.Squared)) + geom_tile() + scale_fill_gradient(low="white", high="blue", name="Adjusted R-squared") + theme_minimal() + ylab("Predictor Variables") + xlab("Surrogate Variables")
 
-# Simple Linear Regression to test the association between species and SVs
-test4 <- lm(SVs~species, data = pheno2) ; summary(test4)
-## For SV1
-#Residual standard error: 0.01563 on 995 degrees of freedom
-#Multiple R-squared:  0.7569,	Adjusted R-squared:  0.752 
-#F-statistic: 154.9 on 20 and 995 DF,  p-value: < 2.2e-16
-## For SV2
-#Residual standard error: 0.02625 on 995 degrees of freedom
-#Multiple R-squared:  0.3145,	Adjusted R-squared:  0.3008 
-#F-statistic: 22.83 on 20 and 995 DF,  p-value: < 2.2e-16
+	ggsave(paste("SV_cor_heatmap", save_name[i], ".png", sep=""), width=10, height=7)
+	write.csv(ar2.df, paste("SV_cor_heatmap_data_", save_name[i], ".csv", sep=""))
+}
 ```
-BioProject and Species are colinear due to each bioproject corresponding to a single species. No batch correction by BioProject will be performed since it is highly correlated with the surrogate variables.
