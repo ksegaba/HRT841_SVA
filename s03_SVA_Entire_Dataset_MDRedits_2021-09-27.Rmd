@@ -193,8 +193,8 @@ args <- list(mod, mod_no_fam, mod_no_tis, mod_no_fam_tis) # arguments for sva an
 clusterExport(clust,list('myfunc','mdata', 'null_mod'))
 out <- parLapply(clust, args, myfunc) # execute sva in parallel
 stopCluster(clust) # close the cluster
-SVs <- out[[1]]$sv # 23 SVs
-SVs_no_fam <- out[[2]]$sv # 30 SVs
+SVs <- out[[1]]$sv # 24 SVs
+SVs_no_fam <- out[[2]]$sv # 33 SVs
 SVs_no_tis <- out[[3]]$sv # 24 SVs
 SVs_no_fam_tis <- out[[4]]$sv # 33 SVs
 # plot of first 2 surrogate variables
@@ -204,13 +204,13 @@ plot(SVs_no_tis, pch=20, col="blue")
 plot(SVs_no_fam_tis, pch=20, col="blue")
 # Save SVs to file:
 rownames(SVs) <- colnames(mdata)
-write.csv(SVs, "SVs_Orthogroup_RNAseq_8-23-21.csv")
+write.csv(SVs, "SVs_Orthogroup_RNAseq_9-27-21.csv")
 rownames(SVs_no_fam) <- colnames(mdata)
-write.csv(SVs_no_fam, "SVs_no_fam_Orthogroup_RNAseq_8-23-21.csv")
+write.csv(SVs_no_fam, "SVs_no_fam_Orthogroup_RNAseq_9-27-21.csv")
 rownames(SVs_no_tis) <- colnames(mdata)
-write.csv(SVs_no_tis, "SVs_no_tissue_Orthogroup_RNAseq_8-23-21.csv")
+write.csv(SVs_no_tis, "SVs_no_tissue_Orthogroup_RNAseq_9-27-21.csv")
 rownames(SVs_no_fam_tis) <- colnames(mdata)
-write.csv(SVs_no_fam_tis, "SVs_no_family_tissue_Orthogroup_RNAseq_8-23-21.csv")
+write.csv(SVs_no_fam_tis, "SVs_no_family_tissue_Orthogroup_RNAseq_9-27-21.csv")
 ```
 
 # PCA
@@ -262,10 +262,10 @@ plot_pca(pheno2$tissue, "PCA on Clean Data (Tissue)")
 plot_pca(pheno2$family, "PCA on Clean Data (Family)")
 
 # write cleaned data to file
-write.csv(clean_data_svs, "clean_Orthogroup_RNAseq_onlySVsCorrected_9-27-21.csv", row.names = F, quote = F)
-write.csv(clean_data_noFam, "clean_Orthogroup_RNAseq_FamilyCorrected_9-27-21.csv", row.names = F, quote = F)
-write.csv(clean_data_noTis, "clean_Orthogroup_RNAseq_TissueCorrected_9-27-21.csv", row.names = F, quote = F)
-write.csv(clean_data_noFamTis, "clean_Orthogroup_RNAseq_FamilyAndTissueCorrected_9-71-21.csv", row.names = F, quote = F)
+write.csv(clean_data_svs, "clean_Orthogroup_RNAseq_onlySVsCorrected_9-27-21.csv", quote = F)
+write.csv(clean_data_noFam, "clean_Orthogroup_RNAseq_FamilyCorrected_9-27-21.csv", quote = F)
+write.csv(clean_data_noTis, "clean_Orthogroup_RNAseq_TissueCorrected_9-27-21.csv", quote = F)
+write.csv(clean_data_noFamTis, "clean_Orthogroup_RNAseq_FamilyAndTissueCorrected_9-27-21.csv", quote = F)
 
 # Check data matches results from Kenia
 clean_data_svs[1:5,1:5]
