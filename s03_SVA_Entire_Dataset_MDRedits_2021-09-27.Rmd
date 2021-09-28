@@ -21,6 +21,7 @@ library(data.table)
 library(MASS)
 library(car)
 library(lme4)
+library(parallel)
 ```
 
 # Load Datasets, curate bad labels
@@ -173,9 +174,9 @@ table(pheno2$stress)
 ```{r}
 # full model matrix - family, stress, tissue should be sig
 mod <- model.matrix(~stress+tissue+family, data=pheno2)
-modNoFam <- model.matrix(~stress+tissue, data=pheno2)
-modNoTis <- model.matrix(~stress+family, data=pheno2)
-modStressOnly <- model.matrix(~stress, data=pheno2)
+mod_no_fam <- model.matrix(~stress+tissue, data=pheno2)
+mod_no_tis <- model.matrix(~stress+family, data=pheno2)
+mod_no_fam_tis <- model.matrix(~stress, data=pheno2)
 
 # null model matrix (no adjustment variables are included)
 null_mod <- model.matrix(~1, data=pheno2)
@@ -187,32 +188,36 @@ mdata <- as.matrix(mdata)
 
 # Perform SVASeq on Entire Dataset
 ```{r}
+
 # Estimate surrogate variables (SVs) using the two-step SVA method
-startTime = Sys.time()
-svseq_obj <- svaseq(mdata, mod, null_mod, method = "two-step")
-endTime = Sys.time()
-endTime - startTime
-
-startTime = Sys.time()
-svseq_obj_noFam <- svaseq(mdata, modNoFam, null_mod, method = "two-step")
-endTime = Sys.time()
-endTime - startTime
-
-startTime = Sys.time()
-svseq_obj_noTis <- svaseq(mdata, modNoTis, null_mod, method = "two-step")
-endTime = Sys.time()
-endTime - startTime
-
-startTime = Sys.time()
-svseq_obj_stressOnly <- svaseq(mdata, modStressOnly, null_mod, method = "two-step")
-endTime = Sys.time()
-endTime - startTime
-
-svseq_obj$sv[1:5, 1:5] # visualize surrogate variables
-
+# svaseq applies a log(data+1) transformation to the input data
+myfunc <- function(args) {
+  library(sva)
+	svaseq(mdata, args, null_mod, method = "two-step", n.sv=35)
+}
+clust <- makeCluster(4) # set up cluster for parallel processing
+args <- list(mod, mod_no_fam, mod_no_tis, mod_no_fam_tis) # arguments for sva analysis
+clusterExport(clust,list('myfunc','mdata', 'null_mod'))
+out <- parLapply(clust, args, myfunc) # execute sva in parallel
+stopCluster(clust) # close the cluster
+SVs <- out[[1]]$sv # 23 SVs
+SVs_no_fam <- out[[2]]$sv # 30 SVs
+SVs_no_tis <- out[[3]]$sv # 24 SVs
+SVs_no_fam_tis <- out[[4]]$sv # 33 SVs
 # plot of first 2 surrogate variables
-plot(svseq_obj$sv, pch=20, col="blue")
-
+plot(SVs, pch=20, col="blue")
+plot(SVs_no_fam, pch=20, col="blue")
+plot(SVs_no_tis, pch=20, col="blue")
+plot(SVs_no_fam_tis, pch=20, col="blue")
+# Save SVs to file:
+rownames(SVs) <- colnames(mdata)
+write.csv(SVs, "SVs_Orthogroup_RNAseq_8-23-21.csv")
+rownames(SVs_no_fam) <- colnames(mdata)
+write.csv(SVs_no_fam, "SVs_no_fam_Orthogroup_RNAseq_8-23-21.csv")
+rownames(SVs_no_tis) <- colnames(mdata)
+write.csv(SVs_no_tis, "SVs_no_tissue_Orthogroup_RNAseq_8-23-21.csv")
+rownames(SVs_no_fam_tis) <- colnames(mdata)
+write.csv(SVs_no_fam_tis, "SVs_no_family_tissue_Orthogroup_RNAseq_8-23-21.csv")
 ```
 
 # PCA
@@ -233,16 +238,16 @@ cleanY = function(y, mod, svs) {
 }
 
 #Remove effects of svs
-clean_data_svs <- cleanY(mdata, mod, svseq_obj$sv)
+clean_data_svs <- cleanY(mdata, mod, SVs)
 
 #Remove effects of svs and family
-clean_data_noFam <- cleanY(mdata, modNoFam, svseq_obj_noFam$sv)
+clean_data_noFam <- cleanY(mdata, mod_no_fam, SVs_no_fam)
 
 #Remove effects of svs and tissue
-clean_data_noTis <- cleanY(mdata, modNoTis, svseq_obj_noTis$sv)
+clean_data_noTis <- cleanY(mdata, mod_no_tis, SVs_no_tis)
 
 #Remove effects of svs and family and tissue
-clean_data_stressOnly = cleanY(mdata, modStressOnly, svseq_obj_stressOnly$sv)
+clean_data_noFamTis = cleanY(mdata, mod_no_fam_tis, SVs_no_fam_tis)
 
 # Function for plotting pca
 plot_pca <- function(Legend, title){
@@ -267,20 +272,19 @@ plot_pca(pheno2$family, "PCA on Clean Data (Family)")
 write.csv(clean_data_svs, "clean_Orthogroup_RNAseq_onlySVsCorrected_9-27-21.csv", row.names = F, quote = F)
 write.csv(clean_data_noFam, "clean_Orthogroup_RNAseq_FamilyCorrected_9-27-21.csv", row.names = F, quote = F)
 write.csv(clean_data_noTis, "clean_Orthogroup_RNAseq_TissueCorrected_9-27-21.csv", row.names = F, quote = F)
-write.csv(clean_data_stressOnly, "clean_Orthogroup_RNAseq_FamilyAndTissueCorrected_9-71-21.csv", row.names = F, quote = F)
+write.csv(clean_data_noFamTis, "clean_Orthogroup_RNAseq_FamilyAndTissueCorrected_9-71-21.csv", row.names = F, quote = F)
 
 # Check data matches results from Kenia
 clean_data_svs[1:5,1:5]
 clean_data_noFam[1:5,1:5]
 clean_data_noTis[1:5,1:5]
-clean_data_stressOnly[1:5,1:5]
-
+clean_data_noFamTis[1:5,1:5]
 ```
 
 # Calculate variance explained by SVs
 ```{r}
 #Add surrogate variables to model matrix
-modSv = cbind(mod,svseq_obj$sv)
+modSv = cbind(mod,SVs)
 fitSv = lmFit(mdata,modSv)
 fitNoSv = lmFit(mdata,mod)
 summary(fitNoSv)
@@ -323,7 +327,6 @@ hist(adjDiffVarExplained, main = "Histogram of variance explained by SVs", ylab 
 
 summary(diffVarExplained)
 summary(adjDiffVarExplained)
-
 ```
 
 # Adjusting for SVs using `f.pvalue` Method from SVA Package
@@ -337,24 +340,21 @@ qValues = p.adjust(pValues,method="BH")
 head(pValues) ; head(qValues)
 
 # Include the surrogate variables in both the null and full models to adjust for the surrogate variables by treating them as adjustment variables that must be included in both models. 
-mod0Sv = cbind(null_mod,svseq_obj$sv)
+mod0Sv = cbind(null_mod,SVs)
 pValuesSv = f.pvalue(mdata,modSv,mod0Sv)
 qValuesSv = p.adjust(pValuesSv,method="BH")
 head(pValuesSv) ; head(qValuesSv)
 
 # Identify orthogroups (OGs) that are NOT differentially expressed with respect to stress + tissue + family
-length(pValuesSv[pValuesSv>0.05]) # 1 w/BH corrected p-value > 0.05
-pValuesSv[pValuesSv>0.05] # corresponding OGs
+length(qValuesSv[qValuesSv>0.05]) # 1 w/BH corrected p-value > 0.05
+qValuesSv[qValuesSv>0.05] # corresponding OGs
 ```
 
 # Correlation between SVs and Sample, Species, & BioProject
 ```{r}
 # Multiple linear regression for testing the association between SVs and 3 batch variables: bioproject, sample, and species
-test <- lm(svseq_obj$sv ~ bioproject + sample + species, data = pheno2)
+test <- lm(SVs ~ bioproject + sample + species, data = pheno2)
 summary(test)
-
-########################################################################
-SVs <- svseq_obj$sv[,1:2] # create a matrix of SVs
 
 # Simple Linear Regression to test the association between bioproject and SVs
 test2 <- lm(SVs~bioproject, data = pheno2) ; summary(test2)
