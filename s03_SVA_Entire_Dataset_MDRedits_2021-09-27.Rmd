@@ -33,15 +33,10 @@ setwd("../raw_data")
 # read in expression data
 mdata <- data.frame(fread("Orthogroup_RNAseq_8-23-21.csv", header=T))
 rownames(mdata) <- mdata$Orthogroups # Reset row names to orthogroup names, needed for SVA
-#mdataNorm = melt(as.data.table(mdata))
 mdata = mdata[,which(colnames(mdata) != "Orthogroups")]
 
 # read in phenotype data
-#pheno <- read.csv("metadata_labels_keniaFixed.csv", header=T) 
-#pheno <- read.csv("metadata_labels_editedByKenia.csv", header=T) 
 pheno <- read.csv("metadata_labels.csv", header=T) 
-#setwd(notebookDirectory)
-#pheno <- read.csv("metadata_labels_keniaFixed_collapsedTissueCat.csv", header=T) 
 
 #Check for duplicates
 any(duplicated(pheno$sra))
@@ -72,9 +67,7 @@ table(pheno$NEW_family)
 table(pheno$NEW_tissue)
 table(pheno$NEW_stress)
 
-#Double-check weird tissues 
-
-# Collapse categories
+# Collapse tissue categories
 pheno$NEW_NEW_tissue = pheno$NEW_tissue
 
 pheno$NEW_NEW_tissue[which(pheno$NEW_NEW_tissue == "early_inflorescence")] = "flower"
